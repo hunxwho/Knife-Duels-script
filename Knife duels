@@ -108,6 +108,7 @@ local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = generateRandomName()
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true -- Ensures UI perfectly aligns with screen space
 
 local guiSuccess, parent = pcall(function() return gethui() end)
 if not guiSuccess or not parent then
@@ -122,7 +123,7 @@ pcall(function()
 end)
 
 ---------------------------------------------------------
--- UNIVERSAL PREMIUM TEAM CHECK (FIXED)
+-- UNIVERSAL PREMIUM TEAM CHECK
 ---------------------------------------------------------
 local function IsTeammate(player)
     if not Config.TeamCheck then return false end
@@ -155,6 +156,37 @@ local function IsTeammate(player)
     end
 
     return false
+end
+
+---------------------------------------------------------
+-- FOV CIRCLE (DRAWING API WITH FALLBACK)
+---------------------------------------------------------
+local FOVCircle
+local FOVFrame
+
+pcall(function()
+    FOVCircle = Drawing.new("Circle")
+    FOVCircle.Color = Theme.Accent
+    FOVCircle.Thickness = 1.2
+    FOVCircle.Filled = false
+    FOVCircle.Transparency = 0.7
+end)
+
+if not FOVCircle then
+    -- GUI Fallback if executor does not support Drawing API
+    FOVFrame = Instance.new("Frame")
+    FOVFrame.Parent = ScreenGui
+    FOVFrame.BackgroundTransparency = 1
+    FOVFrame.AnchorPoint = Vector2.new(0.5, 0.5) -- FIXED: PERFECT CENTERING
+    FOVFrame.Visible = false
+    local FOVCorner = Instance.new("UICorner")
+    FOVCorner.CornerRadius = UDim.new(1, 0)
+    FOVCorner.Parent = FOVFrame
+    local FOVStroke = Instance.new("UIStroke")
+    FOVStroke.Color = Theme.Accent
+    FOVStroke.Thickness = 1.2
+    FOVStroke.Transparency = 0.3
+    FOVStroke.Parent = FOVFrame
 end
 
 ---------------------------------------------------------
@@ -265,19 +297,6 @@ BarGradient.Parent = LoadBarFill
 ---------------------------------------------------------
 -- DASHBOARD UI CONSTRUCTION
 ---------------------------------------------------------
-local FOVFrame = Instance.new("Frame")
-FOVFrame.Parent = ScreenGui
-FOVFrame.BackgroundTransparency = 1
-FOVFrame.Visible = false
-local FOVCorner = Instance.new("UICorner")
-FOVCorner.CornerRadius = UDim.new(1, 0)
-FOVCorner.Parent = FOVFrame
-local FOVStroke = Instance.new("UIStroke")
-FOVStroke.Color = Theme.Accent
-FOVStroke.Thickness = 1.2
-FOVStroke.Transparency = 0.3
-FOVStroke.Parent = FOVFrame
-
 local Main = Instance.new("Frame")
 Main.Parent = ScreenGui
 Main.BackgroundColor3 = Theme.MainBG
@@ -687,6 +706,7 @@ CreateToggle(PageAim, "Team Check", "TeamCheck")
 CreateToggle(PageAim, "Show FOV Circle", "ShowFOV")
 CreateToggle(PageAim, "Wall Check", "WallCheck")
 
+CreateSlider(PageAim, "FOV Size", 50, 400, 120, function(val) Config.FOVRadius = val end)
 CreateSlider(PageAim, "Hitbox Size", 5, 50, 15, function(val) Config.HitboxSize = val end)
 CreateSlider(PageAim, "Aimbot Snappiness", 1, 10, 2, function(val) Config.Smoothing = (val == 10) and 1.0 or (0.05 + ((val - 1) * 0.1)) end)
 local BindBtn = CreateButton(PageAim, "Aimbot Key: [R-Click]", function() end)
@@ -717,6 +737,7 @@ CreateButton(PageSettings, "Target Part: " .. (Config.TargetPart == "Head" and "
     end
 end)
 CreateButton(PageSettings, "Unload Script", function()
+    if FOVCircle then FOVCircle:Remove() end
     ScreenGui:Destroy()
 end)
 
@@ -844,7 +865,11 @@ local function getClosestPlayer()
     local shortestDistance = Config.FOVRadius
 
     for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and not IsTeammate(player) then
+        if player ~= LocalPlayer then
+            if Config.TeamCheck and IsTeammate(player) then
+                continue
+            end
+            
             if player.Character and player.Character:FindFirstChild(Config.TargetPart) and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
                 local targetPart = player.Character[Config.TargetPart]
                 local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
@@ -1022,11 +1047,21 @@ RunService.RenderStepped:Connect(function()
         local cam = Workspace.CurrentCamera
         if not cam then return end
 
-        FOVFrame.Visible = Config.ShowFOV
-        if Config.ShowFOV then
-            FOVFrame.Size = UDim2.new(0, Config.FOVRadius * 2, 0, Config.FOVRadius * 2)
-            local center = cam.ViewportSize / 2
-            FOVFrame.Position = UDim2.new(0, center.X, 0, center.Y)
+        local center = cam.ViewportSize / 2
+        
+        -- Update Native Drawing FOV if available, else update GUI FOV
+        if FOVCircle then
+            FOVCircle.Visible = Config.ShowFOV
+            if Config.ShowFOV then
+                FOVCircle.Position = center
+                FOVCircle.Radius = Config.FOVRadius
+            end
+        elseif FOVFrame then
+            FOVFrame.Visible = Config.ShowFOV
+            if Config.ShowFOV then
+                FOVFrame.Size = UDim2.new(0, Config.FOVRadius * 2, 0, Config.FOVRadius * 2)
+                FOVFrame.Position = UDim2.new(0, center.X, 0, center.Y)
+            end
         end
 
         local target = getClosestPlayer()
@@ -1042,7 +1077,7 @@ RunService.RenderStepped:Connect(function()
             cam.CFrame = (Config.Smoothing >= 1.0) and newCFrame or cam.CFrame:Lerp(newCFrame, Config.Smoothing)
         end
         
-        -- Physical Body Part Expansion (Applied to ALL valid enemies)
+        -- Physical Body Part Expansion
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 local char = player.Character
@@ -1052,22 +1087,19 @@ RunService.RenderStepped:Connect(function()
                 end
                 
                 local partsToExpand = {"Head", "Torso", "UpperTorso", "LowerTorso"}
-                
-                -- Expand EVERY enemy when toggled on
-                local shouldExpand = false
+                local isTarget = false
                 if Config.HitboxExpander and not IsTeammate(player) then
-                    shouldExpand = true
+                    isTarget = true
                 end
                 
                 for _, pName in ipairs(partsToExpand) do
                     local part = char:FindFirstChild(pName)
                     if part and part:IsA("BasePart") then
-                        -- Save original size
                         if not originalSizes[player.UserId][pName] then
                             originalSizes[player.UserId][pName] = part.Size
                         end
 
-                        if shouldExpand and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
+                        if isTarget and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then
                             part.Size = Vector3.new(Config.HitboxSize, Config.HitboxSize, Config.HitboxSize)
                             part.CanCollide = false
                             part.Massless = true
@@ -1077,11 +1109,9 @@ RunService.RenderStepped:Connect(function()
                                 part.Material = Enum.Material.ForceField
                                 part.BrickColor = BrickColor.new("Royal purple")
                             else
-                                -- Return to natural appearance if size is expanded but visuals are off
                                 part.Transparency = 1 
                             end
                         else
-                            -- Reset sizes when toggled off
                             part.Size = originalSizes[player.UserId][pName]
                             part.Transparency = (pName == "HumanoidRootPart") and 1 or 0
                         end
