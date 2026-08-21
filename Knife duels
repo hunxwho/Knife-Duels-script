@@ -526,7 +526,7 @@ local PageSettings = CreateTab("Settings", false)
 
 -- Combat
 CreateToggle(PageAim, "Enable Aimbot Engine", "Aimbot")
-CreateToggle(PageAim, "Hitbox Expansion", "HitboxExpander")
+CreateToggle(PageAim, "Safe Hitbox Expansion", "HitboxExpander") 
 CreateToggle(PageAim, "Render Target Hitboxes", "ShowHitboxes")
 CreateToggle(PageAim, "Strict Team Check", "TeamCheck")
 CreateToggle(PageAim, "Render FOV Region", "ShowFOV")
@@ -534,11 +534,13 @@ CreateToggle(PageAim, "Strict Wall Check", "WallCheck")
 CreateSlider(PageAim, "FOV Radius", 50, 400, 120, function(val) Config.FOVRadius = val end)
 CreateSlider(PageAim, "Expansion Size", 5, 50, 15, function(val) Config.HitboxSize = val end)
 CreateSlider(PageAim, "Tracking Snappiness", 1, 10, 2, function(val) Config.Smoothing = (val == 10) and 1.0 or (0.05 + ((val - 1) * 0.1)) end)
+
 local BindBtn = CreateButton(PageAim, "Aimbot Key: [R-Click]", function() end)
 BindBtn.MouseButton1Click:Connect(function()
-    isBindingKey = true
-    BindBtn.Text = "Press any Key or Click..."
+    BindBtn.Text = "Press Key or Button..."
     Tween(BindBtn, {TextColor3 = Theme.Accent})
+    task.wait(0.1) 
+    isBindingKey = true
 end)
 
 -- Visuals
@@ -586,6 +588,47 @@ CreateButton(PageSettings, "Target Part: " .. (Config.TargetPart == "Head" and "
 end)
 CreateButton(PageSettings, "Unload Interface", function()
     ScreenGui:Destroy()
+end)
+
+---------------------------------------------------------
+-- CORE INPUT LOGIC & GAMEPAD INTEGRATION
+---------------------------------------------------------
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if isBindingKey then
+        local inputType = input.UserInputType
+        local keyCode = input.KeyCode
+        
+        if inputType == Enum.UserInputType.Keyboard then
+            Config.Keybind = keyCode
+            BindBtn.Text = "Aimbot Key: [" .. keyCode.Name .. "]"
+            isBindingKey = false
+            Tween(BindBtn, {TextColor3 = Theme.TextWhite})
+        elseif inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.MouseButton2 or inputType == Enum.UserInputType.MouseButton3 then
+            Config.Keybind = inputType
+            local name = (inputType == Enum.UserInputType.MouseButton1 and "L-Click") or (inputType == Enum.UserInputType.MouseButton2 and "R-Click") or "M-Click"
+            BindBtn.Text = "Aimbot Key: [" .. name .. "]"
+            isBindingKey = false
+            Tween(BindBtn, {TextColor3 = Theme.TextWhite})
+        elseif inputType.Name:match("Gamepad") then
+            Config.Keybind = keyCode
+            BindBtn.Text = "Aimbot Key: [" .. keyCode.Name .. "]"
+            isBindingKey = false
+            Tween(BindBtn, {TextColor3 = Theme.TextWhite})
+        end
+        return
+    end
+
+    if not gameProcessed then
+        if input.KeyCode == Config.Keybind or input.UserInputType == Config.Keybind then
+            isAimingKey = true
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if (input.KeyCode == Config.Keybind or input.UserInputType == Config.Keybind) then
+        if MobileAimButton.Text ~= "LOCKED" then isAimingKey = false end
+    end
 end)
 
 ---------------------------------------------------------
@@ -934,7 +977,7 @@ local function updateESP()
 end
 
 ---------------------------------------------------------
--- MASTER RENDER LOOP
+-- MASTER RENDER LOOP (SAFE HITBOX UPDATE)
 ---------------------------------------------------------
 RunService.RenderStepped:Connect(function()
     pcall(function()
@@ -981,10 +1024,13 @@ RunService.RenderStepped:Connect(function()
             cam.CFrame = (Config.Smoothing >= 1.0) and newCFrame or cam.CFrame:Lerp(newCFrame, Config.Smoothing)
         end
         
+        -- OVERHAULED SAFE LIMB EXPANDER (No Root Part Modification)
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character then
                 local char = player.Character
                 if not originalSizes[player.UserId] then originalSizes[player.UserId] = {} end
+                
+                -- Target standard limbs only
                 local partsToExpand = {"Head", "Torso", "UpperTorso", "LowerTorso"}
                 
                 local shouldExpand = false
@@ -1019,7 +1065,7 @@ RunService.RenderStepped:Connect(function()
                             end
                         else
                             part.Size = originalSizes[player.UserId][pName]
-                            part.Transparency = (pName == "HumanoidRootPart") and 1 or 0
+                            part.Transparency = 0
                         end
                     end
                 end
